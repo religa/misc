@@ -1,0 +1,154 @@
+#!/usr/bin/perl -w
+
+# Author: T. Religa
+# Licence: GPL
+# Date: 2009-06-29
+#
+
+use Getopt::Std;
+use File::Basename;
+use Cwd;
+
+getopts('f:wtr:d:hv', \%opts);
+
+&usage() if $opts{"h"};
+$verbose = $opts{"v"} || 0;
+$path = $opts{"d"} || &Cwd::cwd();
+$requirements = $opts{"r"} || '((Arch =="INTEL" && OpSys == "LINUX") || (Arch =="X86_64" && OpSys == "LINUX"))';
+$argument_file = $opts{"f"};
+$wait = $opts{"w"};
+$tst = $opts{"t"};
+
+$command = $ARGV[0] || &usage("Give the executable name for condor");
+
+$basename = basename($command);
+$condor_job = "$path/$basename.job";
+
+
+open(JOB, ">$condor_job") || die("$0: Can't open '$condor_job' for writing.\n");
+print JOB "Universe     = vanilla
+Executable   = $command
+Getenv       = True
+Initialdir   = $path
+Log          = $path/$basename.log
+Output       = $path/$basename.out
+Error        = $path/$basename.err
+Transfer_executable = False 
+Notification = Never
+Rank         = Mips
+Requirements = $requirements
+
+";
+
+# This loads up the arguments from the command line 
+$arg_count = 0;
+shift @ARGV; @arguments = @ARGV; 
+while($arg = shift @arguments) {
+ print JOB "Arguments    = $arg\nQueue\n\n";
+ $arg_count++;
+}
+
+# And this does it from a file, where each line is one 'argument line'
+if ($argument_file) {
+ open(ARG_FILE, "<$argument_file") || die("$0: Can't open '$argument_file' for reading.\n");
+ while(<ARG_FILE>) {
+  chomp; 
+  print JOB "Arguments    = $_\nQueue\n\n";
+  warn("$0: Empty line found in '$argument_file'. Making it the argument to '$command'.\n") if /^\s*$/;
+  $arg_count++;
+ }
+ close(ARG_FILE);
+}
+close(JOB) || die("$0: Failed to write '$condor_job' in '$path' directory\n");
+
+die("$0: No arguments given to the command '$command'.\n") if $arg_count==0; 
+
+exit(0) if $tst; 
+
+#open(SUBMIT, "nmr_submit -c fast '$condor_job' 2>&1 |") || die("$0: Failed to run condor_submit '$condor_job'\n");
+open(SUBMIT, "condor_submit '$condor_job' 2>&1 |") || die("$0: Failed to run condor_submit '$condor_job'\n");
+while(<SUBMIT>) {
+ print if $verbose;
+ if (/^(\d+) job\(s\) submitted to cluster (\d+)./) {
+        $time_submit = time;
+	$count_jobs_total = $1;
+        $cluster_id = $2;
+    } elsif (/WARNING.*Invalid log file/ ||
+             /WARNING.*is not writable by condor/) {
+        die("$0: $_\nFailed to submit Condor job.\n");
+    } else {
+        $submit_errors .= $_;
+    }
+}
+
+if (!close(SUBMIT) || !defined($cluster_id)) {
+    die("$0:$submit_errors\nFailed to submit Condor job.\n");
+}
+
+if ($wait) {
+ print "Submitted $count_jobs_total job(s) to cluster $cluster_id with '$command' on ".(localtime $time_submit)."...\n";
+ $working=1; 
+ while($working) {
+  $time_now = time;
+  $time_now_lt = localtime $time_now;
+  # BUG: This might cause the program to finish even if the jobs might be still running
+  open(Q, "condor_q '$cluster_id' -format '%s\n' JobStatus |") || warn("$0: Can't open condor_q - not sure if the jobs finished\n"); 
+  open(H, "condor_history -backwards '$cluster_id' -format '%s\t' JobStatus -format '%s\n' CommittedTime |") || warn("$0: Can't open condor_history - not sure if the jobs finished\n"); 
+  
+  @q=<Q>; 
+  @h=<H>;
+  $job_U = (grep /^0\s*$/, @q) + (grep /^0\s+/, @h);
+  $job_I = (grep /^1\s*$/, @q) + (grep /^1\s+/, @h);
+  $job_R = (grep /^2\s*$/, @q) + (grep /^2\s+/, @h);
+  $job_X = (grep /^3\s*$/, @q) + (grep /^3\s+/, @h);
+  $job_C = (grep /^4\s*$/, @q) + (grep /^4\s+/, @h);
+  $job_H = (grep /^5\s*$/, @q) + (grep /^5\s+/, @h);
+  close(Q); 
+  close(H);
+  $time_total = 0;
+  for(@h) {$time_total+=$1 if /^4\s+(\d+)/;}
+  $time_complete_lt=" ";
+  if ($time_total>0 && $job_C>0) {
+   $time_complete_lt = localtime ($time_now+$time_total*($job_R/2.0+$job_I)/$job_C);
+  }
+  printf "\r%-25s/ %-25s U:%4s H:%4s R:%4s I:%4s C:%4s X:%4s", ($time_now_lt, $time_complete_lt, $job_U, $job_H, $job_R, $job_I, $job_C, $job_X);
+  $working=(@q+0);
+  sleep 10;
+#  sleep 60;
+  # Term::ReadKey
+  # ctrl-c remove the jobs, ctrl-z hold the jobs, ctrl-d go to background (i.e. quit, but leave the jobs running)
+  # space - status update, +/=/- - increase/decrease the frequency of updates 
+  # r - release the jobs, h - hold the jobs 
+ }
+ print "\n";
+}
+
+sub usage()
+  { 
+    $status=0;
+    if (@_) {$str="ERROR: @_\n"; $status=1}
+    print("Usage: $0 [options] <executable> <arg 1> [arg 2] ... [arg N]
+The program will submit the executable to condor, each with separate argument. 
+Example:
+\tThis command will submit 3 calcSurface jobs, each with a separate pdb file
+\t$0 bin/calcSurface struct1.pdb struct2.pdb struct3.pdb 
+Options:
+ -d path\tinitial directory (default: pwd)
+ -f file\tfile with arguments passed to the command
+ -r \t\tjob requirements (default: run on LINUX, X86_64 or INTEL architecture)
+ -w \t\twait for the job to finish
+ -t \t\ttest - just create the condor.job file, but not submit it
+ -h \t\tprint this helpful help message
+ -v \t\tenable verbose output
+$str");
+    exit ($status);
+  }
+
+#Local Variables:
+#mode: perl
+#mode: font-lock
+#End:
+
+
+
+

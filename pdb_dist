@@ -1,0 +1,178 @@
+#! /usr/bin/perl -w
+
+# Author: T. Religa
+# Licence: GPL
+# Date: 2003-03-04
+
+use Getopt::Std;
+getopts('hvpeslankr6xb:o:m:', \%opts);
+
+&usage() if $opts{"h"};
+$verbose = $opts{"v"} || 0;
+$shortest = $opts{"s"};		# Report only the shortest distance
+$longest = $opts{"l"};		# Only the longest distance
+$average = $opts{"a"};		# Just a 'typical' averagign
+$sum6 = $opts{"6"};		# Sum averaging
+$ave6 = $opts{"r"};		# R-6 averaging
+$xplor_chain= $opts{"x"};	# Use xplor-style chain name
+$nice_print = $opts{"n"};	# Print only one decimal place
+$ors= $opts{"o"} || "\n";	# Output record separator
+$prog = $opts{"p"}; 		# Prepare for Sparky program
+$key = $opts{"k"}; 		# Print key (residue pair) in front of the distance
+$excludesame = $opts{"e"}; 	# Exclude the same residue
+$max = $opts{"m"} || 0; 	# Maximum distance to report
+$resn2 = $opts{"b"} || "."; 	# Filter by the residue name on the second atom
+$res1 = $ARGV[0] || &usage();
+$atom1 = $ARGV[1] || &usage();
+$res2 = $ARGV[2] || &usage();
+$atom2 = $ARGV[3] || &usage();
+$file_name = $ARGV[4] || &usage();
+
+$chain1="";
+$chain2="";
+
+if ($res1=~/^([\w\[\]\|\(\)\*]+)\/([\-\d]+)/) {
+ $chain1=$1;
+ $res1=$2;
+ # print "$chain1 $res1 $atom1\n";
+}
+if ($res2=~/^([\w\[\]\|\(\)\*]+)\/([\-\d]+)/) {
+ $chain2=$1; 
+ $res2=$2;
+ # print "$chain2 $res2 $atom2\n";
+}   
+
+# print "$chain2 $res2 $atom2\n";
+
+if ($prog) {
+$atom1=~s/[\#\d\*]//g;
+$atom2=~s/[\#\d\*]//g;
+}
+
+open(FILE, "<$file_name") or die ("$0: Can't open $file_name for reading");
+@file = <FILE>; # chomp @file;
+@file_buff = @file;
+close(FILE);
+
+while ($_ = shift @file_buff) {
+  if (/^ATOM.{2}.{5}(.{6})(.{4})(.)(.{5}).{3}(.{8})(.{8})(.{8}).*(.{4})$/)
+    {
+      ($atom, $resn, $chain, $res, $x, $y, $z,$alt) = ($1, $2, $3, $4, $5, $6,$7, $8);
+      $chain=$alt if $xplor_chain; $chain=~s/^\s*(.*?)\s*/$1/;
+      #print "($chain, $resn, $atom, $res, $x, $y, $z)\n";
+      #$res=~tr/ //d; $atom=~tr/ //d;
+      if ($atom=~/ $atom1/ && $res=~/ $res1 / && (!$chain1 || $chain=~/$chain1/)) 
+	{
+	  #print "1($atom, $resn, $res, $x, $y, $z)\n";
+	  my @l = ($x, $y, $z);
+	  $a{$chain."_".$res."_".$atom} = \@l;
+	}
+      if ($atom=~/ $atom2/ && $res=~/ $res2 / && (!$chain2 || $chain=~/$chain2/) && (!$resn2 || $resn=~/$resn2/)) 
+	{
+	  #print "2($atom, $resn, $res, $x, $y, $z)\n";
+	  my @l = ($x, $y, $z);
+	  $b{$chain."_".$res."_".$atom} = \@l;
+	}
+    }
+}
+
+while (($k1, $v1) = each %a)
+  {
+    ($chain1, $res1, $atom1) = split /_/, $k1;
+    ($x1,$y1, $z1) = @{$v1};
+    while (($k2, $v2) = each %b)
+      {
+	($chain2, $res2, $atom2) = split /_/, $k2;
+	($x2,$y2, $z2) = @{$v2};
+        next if $excludesame && $res1==$res2;
+	#print "$k1, ($x1,$y1, $z1)\t$k2, (x2,$y2, $z2)\n";
+	$d = sqrt(($x1 - $x2)**2 + ($y1 - $y2)**2 + ($z1 - $z2)**2);
+	if ($max==0 || $d<=$max) {
+          print $k1."_$k2\t$d\n" if $verbose;
+          $distances{$k1."_".$k2} = $d;
+        }
+      }
+  }
+
+die("$0: No atoms for $chain1,$res1,$atom1, $chain2,$res2,$atom2 found\n") unless ((keys %distances)+0)>0;
+
+
+@l = sort ({$a <=> $b} values %distances);
+@l = map sprintf ("%.1f", $_), @l if $nice_print;
+$"=$ors;
+if (!$shortest && !$longest && !$average && !$sum6 && !$ave6 && !$key)
+  {
+    print "@l\n";
+  }
+elsif ($shortest)
+  {
+    print "$l[0]\n";
+  }
+elsif ($longest)
+  {
+    print "$l[$#l]\n";
+  }
+elsif ($sum6)
+  {
+    $s = 0;
+    $s+=$_**(-6) for (@l);
+    $s = $s**(-1/6);
+    print "$s\n";
+  }
+elsif ($ave6)
+  {
+    $count=(@l+0);
+    $s = 0;
+    $s+=$_**(-6) for (@l);
+    $s = ($s/$count)**(-1/6);
+    print "$s\n";
+  }
+elsif ($key)
+  {
+    while (($k,$v)=each %distances) {
+      printf "%s\t%8.2f\n", $k, $v;
+    }
+  }
+#elsif ($ble)
+# {
+#    $count=(@l+0);
+#    $s = 0;
+#    for(@l) {
+#     $dist = 
+#
+#    }
+#    $s = ($s/$count)**(-1/6);
+#    print "$s\n";
+#
+# }
+elsif ($average)
+  {
+    $count=(@l+0);
+    $s = 0;
+    $s+=$_ for (@l);
+    $s = $s/$count;
+    print "$s\n";
+  }
+
+sub usage()
+  {
+    die("Usage: $0 [<options>] res1 atom1 res2 atom2 pdb_file
+@_
+The program will calculate the distance between atoms from a PDB file.
+ -n \t\tprint distances up to one decimal place
+ -o character\tseparator between the distances (default: \\n)
+ -o distance\tmaximum distance to report (default: N/A)
+ -s \t\tshow only the shortest distance
+ -6 \t\tcalculate sum(r-6)
+ -r \t\tcalculate ave(r-6)
+ -l \t\tshow only the longest distance
+ -x \t\tuse xplor style chain selection in PDB
+ -v \t\tenable verbose output
+ -h \t\tprint this helpful help message
+");
+  }
+
+# Local Variables:
+# mode: perl
+# mode: font-lock
+# End:
